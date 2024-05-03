@@ -7,19 +7,35 @@ from torch import sqrt
 import numpy as np
 
 # create random initial coordinates
-x1 = Variable(torch.randn(1)*1, requires_grad=True)
-y1 = Variable(torch.randn(1)*1, requires_grad=True)
-x2 = Variable(torch.randn(1)*1, requires_grad=True)
-y2 = Variable(torch.randn(1)*1, requires_grad=True)
-x3 = Variable(torch.randn(1)*1, requires_grad=True)
-y3 = Variable(torch.randn(1)*1, requires_grad=True)
-x4 = Variable(torch.randn(1)*1, requires_grad=True)
-y4 = Variable(torch.randn(1)*1, requires_grad=True)
+x1_0=np.random.normal(1)
+y1_0=np.random.normal(1)
+x2_0=np.random.normal(1)
+y2_0=np.random.normal(1)
+x3_0=np.random.normal(1)
+y3_0=np.random.normal(1)
+x4_0=np.random.normal(1)
+y4_0=np.random.normal(1)
 
-plt.plot(x1.detach().numpy(), y1.detach().numpy(), 'x', color='red', label="Initial Positions")
-plt.plot(x2.detach().numpy(), y2.detach().numpy(), 'x', color='red')
-plt.plot(x3.detach().numpy(), y3.detach().numpy(), 'x', color='red')
-plt.plot(x4.detach().numpy(), y4.detach().numpy(), 'x', color='red')
+# Turn initial coordinates into tensors
+x1=(torch.tensor(x1_0))
+y1=(torch.tensor(y1_0))
+x2=(torch.tensor(x2_0))
+y2=(torch.tensor(y2_0))
+x3=(torch.tensor(x3_0))
+y3=(torch.tensor(y3_0))
+x4=(torch.tensor(x4_0))
+y4=(torch.tensor(y4_0))
+
+# Apply grad=true
+x1.requires_grad_(requires_grad=True) 
+y1.requires_grad_(requires_grad=True) 
+x2.requires_grad_(requires_grad=True) 
+y2.requires_grad_(requires_grad=True) 
+x3.requires_grad_(requires_grad=True) 
+y3.requires_grad_(requires_grad=True) 
+x4.requires_grad_(requires_grad=True) 
+y4.requires_grad_(requires_grad=True)
+
 
 # Plot random initial coordinates
 print("Init Coords")
@@ -43,7 +59,7 @@ def compute_perimeter(x1, y1, x2, y2, x3, y3, x4, y4):
     return s1 + s2 + s3 + s4
 
 # Define the optimizer and hyper-parameters
-optimizer = optim.SGD([x1, y1, x2, y2, x3, y3, x4, y4], lr=.01, momentum=0)
+optimizer = optim.RMSprop([x1, y1, x2, y2, x3, y3, x4, y4], lr=.01)
 
 # Number of iterations 
 steps =10000
@@ -102,6 +118,12 @@ print("Optimized Area: {:.4f}".format(compute_area(x1, y1, x2, y2, x3, y3, x4, y
 print("Theoretical maximum = 625")
 
 # Plot optimized coordinates
+plt.plot(x1_0, y1_0, 'x', color='red', label="Initial Positions")
+plt.plot(x2_0, y2_0, 'x', color='red')
+plt.plot(x3_0, y3_0, 'x', color='red')
+plt.plot(x4_0, y4_0, 'x', color='red')
+
+
 plt.plot(x1.item(), y1.item(), 'o', color='black', label="Final Positions")
 plt.plot(x2.item(), y2.item(), 'o', color='black')
 plt.plot(x3.item(), y3.item(), 'o', color='black')
@@ -113,12 +135,13 @@ plt.legend()
 plt.grid(color='gray', linestyle='-', linewidth=0.5)
 plt.xlim(-25, 25)
 plt.ylim(-25, 25)
-plt.savefig("4_points_init_final_positions_sgd_10000its_lr0.01_0mom.pdf")
+plt.savefig("4_points_init_final_positions_RMSprop_10000its_lr0.01.pdf")
 
-# Plot loss history  
+# Plot loss history
+plt.clf()
 plt.plot(loss_history)
 plt.title("Loss Function for Quadrilateral Area Optimization with Perimeter Constraint")
 plt.xlabel("Iterations")
 plt.ylabel("loss")
 plt.grid(color='gray', linestyle='-', linewidth=0.5)
-plt.savefig("4_points_loss_history_sgd_10000its_lr0.01_0mom.pdf")
+plt.savefig("4_points_loss_history_RMSprop_10000its_lr0.01.pdf")
