@@ -5,18 +5,22 @@
 #
 import logging
 import torch
+
 import numpy as np
+
+import penalty
 
 GPS_FREQ = 1.57542e9
 
 logger = logging.getLogger(__name__)
 
-
+# from disko import SquareFoV
+# '''
 def elaz2lmn(el_r, az_r):
-    l = np.sin((az_r)) * np.cos((el_r))
-    m = np.cos((az_r)) * np.cos((el_r))
+    l = np.sin(az_r) * np.cos(el_r)
+    m = np.cos(az_r) * np.cos(el_r)
     # Often written in this weird way... np.sqrt(1.0 - l**2 - m**2)
-    n = np.sin((az_r))
+    n = np.sin(el_r)
     return l, m, n
 
 
@@ -45,10 +49,9 @@ class SquareFoV():
             f"New SubFoV, width_pix={self.width_pix} npix={self.npix}, res={self.res_arcmin} arcmin")
 
         self.fov = width_rad
-        # self.pixels = np.zeros(self.npix)
-        self.pixels = torch.zeros(size=[self.npix])
+        self.pixels = np.zeros(self.npix)
 
-        self.pixel_areas = torch.ones(size=[self.npix])/self.npix
+        self.pixel_areas = np.ones(self.npix)/self.npix
 
         # Assume flat sky
         # Create the direction cosines
@@ -100,46 +103,7 @@ class SquareFoV():
     def get_image(self):
         return self.pixels.reshape(self.width_pix, self.width_pix)
 
-
-def penalize(duv, limit=0.25):
-    sharpness = 10
-    m =  torch.nn.Softplus()
-    clip_lower = m((limit - duv)*sharpness)/sharpness
-    return clip_lower/limit
-
-
-def penalize_below(x, limit, width):
-    # Scale so that duv is expressed in multiples of width
-    xs = x / width
-    ls = limit / width
-    return 10*limit*penalize(xs, ls)/width
-
-
-def penalize_above(x, limit=0.2):
-    sharpness = 40
-    m =  torch.nn.Softplus()
-    clip_lower = m((x-limit)*sharpness)/sharpness   # Always positive
-    ret = 100 * clip_lower
-    return ret
-
-
-def get_penalty(x,y,z, min_spacing):
-    num_ant = x.shape[0]
-
-    penalty = 0
-    num_ant = x.shape[0]
-    for i in range(num_ant):
-        for j in range(num_ant):
-            if (i != j):
-                u = x[i] - x[j]
-                v = y[i] - y[j]
-                w = z[i] - z[j]
-                
-                duv = torch.sqrt (u**2 + v**2 + w**2)
-                penalty += penalize_below(duv, min_spacing, width=0.01)
-                
-    return penalty
-
+# '''
 
 def get_uvw(x,y,z):
 
@@ -167,9 +131,8 @@ def get_fringes(uvw, l,m,n_minus_1,freq=GPS_FREQ):
     pixel_areas = 4*np.pi/l.shape[0]
     fringes = []
     for u,v,w in uvw:
-        exponent = (u*l + v*m + w*n_minus_1).type(torch.complex128)*jomega
+        exponent = (u.detach()*l + v.detach()*m + w.detach()*n_minus_1).type(torch.complex128)*jomega
         h = torch.exp(exponent) * pixel_areas
-        #ht= h.detach().numpy()
         fringes.append(h)
     return fringes
 
@@ -185,25 +148,23 @@ def disko_image(vis, uvw, l,m,n_minus_1,freq=GPS_FREQ):
     # vis: The visibilities
     # u,v,w the uv coordinates
     
-    sky = torch.zeros(size=(l.shape[0],), dtype=torch.complex128)
+    sky = torch.zeros(size=(l.shape[0],))
     fringes = get_fringes(uvw, l,m,n_minus_1,freq=GPS_FREQ)
     for h,v in zip(fringes, vis):
-
-        sky = sky + v*h
-       
-    return sky
+        sky = sky + h*v
+        
+    return torch.abs(sky)
 
 
 
 def point_spread_function(x,y,z, fov):
     uvw, indices = get_uvw(x,y,z)
-
-    vis = torch.ones((len(indices)), dtype=torch.complex128)
+    vis = np.ones(shape=(len(indices),))
     
     sky = disko_image(vis=vis, uvw=uvw, l=fov.l, m=fov.m, n_minus_1=fov.n_minus_1)
-    image = sky.detach().reshape(fov.width_pix, fov.width_pix)
+    image = sky.reshape(fov.width_pix, fov.width_pix)
 
-    return image.abs()
+    return image
 
 
 
@@ -212,8 +173,7 @@ def global_f(x):
         A function suitable for optimizing using a global minimizer. This will
         return the condition number of the telescope operator
     '''
-    
-    global fov, min_spacing
+    global fov, min_spacing, max_radius
     
     xy = x.reshape((2,-1))
     x = xy[0,:]
@@ -223,9 +183,24 @@ def global_f(x):
     image = point_spread_function(x,y,z,fov)
     
     ## Now score the image using torch functions.
-    too_close_penalty = get_penalty(x,y,z, min_spacing)
+    position_penalty = penalty.get_penalty(x,y,z, min_spacing, max_radius)
+
+    # Insert a score for how good the point spread function is There
+    image_penalty = 3
     
-    return penalty
+    return position_penalty + image_penalty
+
+
+def global_f(p):
+    _x, _y, _z = torch.tensor_split(p, 3)
+
+    global fov
+    min_spacing = 0.25
+    radius = 1.7
+    
+    _penalty = penalty.get_penalty(_x,_y,_z, min_spacing, radius)
+    image = point_spread_function(_x,_y,_z,fov)
+    return _penalty
 
 if __name__=="__main__":
     import argparse
@@ -234,7 +209,7 @@ if __name__=="__main__":
                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 
-    parser.add_argument('--arcmin', type=float, default=20, help="Resolution of the sky in arc minutes.")
+    parser.add_argument('--arcmin', type=float, default=60, help="Resolution of the sky in arc minutes.")
     parser.add_argument('--radius', type=float, default=2.0, help="Length of each arm in meters.")
     parser.add_argument('--radius-min', type=float, default=0.1, help="Minimum antenna position along each arm in meters.")
     parser.add_argument('--spacing', type=float, default=0.15, help="Minimum antenna spacing.")
@@ -259,14 +234,15 @@ if __name__=="__main__":
     logger = logging.getLogger()
     logger.addHandler(console)
 
+
     n_ant = 24
-    radius = 2.0
+    radius = ARGS.radius
     min_spacing = 0.2
 
     ### Create the fov object once. It should NOT be created each time the array is evaluated
     fov = SquareFoV(res_arcmin=ARGS.arcmin,
-                                 theta = 0.0, phi=0.0,
-                                 width_rad=np.radians(ARGS.fov))
+                    theta = 0.0, phi=0.0,
+                    width_rad=np.radians(ARGS.fov))
     
     
     ## Generate some random antenna positions
@@ -280,7 +256,22 @@ if __name__=="__main__":
     
     ## Now score the image using torch functions.
     
-    penalty = get_penalty(x,y,z, min_spacing)
+    position_penalty = penalty.get_penalty(x,y,z, min_spacing, radius)
     
     plt.imshow(image)
-    plt.show()
+    # plt.show()
+    
+    x_opt = torch.hstack([x,y,z])
+    
+    
+    opt = torch.optim.SGD([x_opt], lr=0.001, momentum=0)
+    x_opt.requires_grad_()
+    opt.zero_grad()
+
+    for i in range(10):
+        print(f"x_opt = {x_opt}")
+        result = global_f(x_opt)
+        loss = result
+        loss.backward()
+        opt.step()
+
