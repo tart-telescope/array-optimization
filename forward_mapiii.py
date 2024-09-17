@@ -5,12 +5,14 @@
 #
 import logging
 import torch
+import matplotlib.pyplot
+import matplotlib as plt
 import numpy as np
-import forward_map
-#from forward_map import penalty 
 import penalty
 
 GPS_FREQ = 1.57542e9
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,19 @@ class SquareFoV():
         self.n_minus_1 = self.n - 1
 
 
+    def get_mask(self, center_deg):
+        ret = np.ones(self.npix, dtype=np.float64)
+        
+        elevation_limit = np.pi/2 - np.radians(center_deg/2)
+        
+        for i in range(self.npix):
+            el = self.el_r[i]
+            
+            if (el > elevation_limit):
+                ret[i] = 0.0
+        
+        return torch.from_numpy(ret).reshape(self.width_pix, self.width_pix)
+    
     def __repr__(self):
         return f"SquareFoV fov={self.fov}, width={self.width_pix}, res={self.res_arcmin}"
 
@@ -168,39 +183,40 @@ def point_spread_function(x,y,z, fov):
 
 
 
-def global_f(x):
-    '''
-        A function suitable for optimizing using a global minimizer. This will
-        return the condition number of the telescope operator
-    '''
-    global fov, min_spacing, max_radius
-    
-    xy = x.reshape((2,-1))
-    x = xy[0,:]
-    y = xy[1,:]
-    z = torch.zeros_like(x)
 
-    image = point_spread_function(x,y,z,fov)
-    
-    ## Now score the image using torch functions.
-    position_penalty = penalty.get_penalty(x,y,z, min_spacing, max_radius)
+def param2xyz(p):
+    global n_ant
+    return p.reshape(3, n_ant)
 
-    # Insert a score for how good the point spread function is There
-    image_penalty = 3
-    
-    return position_penalty + image_penalty
+def Lossfunction(p):
+    _x, _y, _z = param2xyz(p) # torch.tensor_split(p, 3)
 
-
-def global_f(p):
-    _x, _y, _z = torch.tensor_split(p, 3)
-
-    global fov
+    global fov, n_ant, radius, mask
     min_spacing = 0.25
-    radius = 1.7
     
     _penalty = penalty.get_penalty(_x,_y,_z, min_spacing, radius)
-    image = point_spread_function(_x,_y,_z,fov)
-    return _penalty
+    image = torch.abs(point_spread_function(_x,_y,_z,fov))
+    
+    image_score = torch.median(image*mask)/torch.max(image)
+    
+    return _penalty + image_score*100
+
+
+def Lossfunction_rect(p):
+    _x, _y, _z = param2xyz(p) # torch.tensor_split(p, 3)
+
+    global fov, n_ant, radius, mask
+    min_spacing = 0.25
+    ply_wood_xdim=1.2
+    ply_wood_ydim=2.4
+
+    _penalty = penalty.get_penalty_rect(_x,_y,_z, min_spacing, ply_wood_xdim, ply_wood_ydim)
+    image = torch.abs(point_spread_function(_x,_y,_z,fov))
+    
+    image_score = torch.median(image*mask)/torch.max(image)
+    
+    return _penalty + image_score*100
+
 
 if __name__=="__main__":
     import argparse
@@ -210,9 +226,9 @@ if __name__=="__main__":
 
 
     parser.add_argument('--arcmin', type=float, default=60, help="Resolution of the sky in arc minutes.")
-    parser.add_argument('--radius', type=float, default=2.0, help="Length of each arm in meters.")
+    parser.add_argument('--radius', type=float, default=1.5, help="Length of each arm in meters.")
     parser.add_argument('--radius-min', type=float, default=0.1, help="Minimum antenna position along each arm in meters.")
-    parser.add_argument('--spacing', type=float, default=0.15, help="Minimum antenna spacing.")
+    parser.add_argument('--spacing', type=float, default=0.25, help="Minimum antenna spacing.")
 
     parser.add_argument('--fov', type=float, default=140.0, help="Field of view in degrees")
 
@@ -237,12 +253,17 @@ if __name__=="__main__":
 
     n_ant = 24
     radius = ARGS.radius
-    min_spacing = 0.2
+    min_spacing = ARGS.spacing
 
     ### Create the fov object once. It should NOT be created each time the array is evaluated
     fov = SquareFoV(res_arcmin=ARGS.arcmin,
                     theta = 0.0, phi=0.0,
                     width_rad=np.radians(ARGS.fov))
+    
+    # The image width is given by fov.width_pix
+    # Create a mask
+    mask = fov.get_mask(center_deg=3.0)
+    
     
     
     ## Generate some random antenna positions
@@ -250,31 +271,126 @@ if __name__=="__main__":
     x = 2*radius*torch.rand(size=(n_ant,)) - radius
     y = 2*radius*torch.rand(size=(n_ant,)) - radius
     z = torch.zeros_like(x)
-    
-    # Score the image
-    image = point_spread_function(x,y,z,fov)
-    
-    ## Now score the image using torch functions.
-    
-    #position_penalty = penalty.get_penalty(x,y,z, min_spacing, radius)
-    #penalty.get_penalty(x,y,z, min_spacing, radius)
-    #forward_map.get_penalty(x,y,z, min_spacing, radius)
-    
-    
-    plt.imshow(image)
-    # plt.show()
-    
-    x_opt = torch.hstack([x,y,z])
-    
-    
-    opt = torch.optim.SGD([x_opt], lr=0.001, momentum=0)
-    x_opt.requires_grad_()
-    opt.zero_grad()
 
-    for i in range(10):
-        print(f"x_opt = {x_opt}")
-        result = global_f(x_opt)
-        loss = result
+    
+    
+    # Create a parameter vector from the positions
+    x_opt = torch.hstack([x,y,z])
+
+    psf_1 = point_spread_function(x.detach(),y.detach(),z.detach(), fov)
+
+    plt.figure(figsize=(10, 8))
+    plt.grid(True)
+    plt.title("Before")
+    plt.imshow(psf_1.detach())
+    plt.savefig('before.png')
+
+    
+    plt.ion()
+    figure, ax = plt.subplots(figsize=(10, 8))
+    line1, = ax.plot(x, y, 'o')
+    ax.grid(True)
+
+    loss_history=[]
+
+    #opt = torch.optim.SGD([x_opt], lr=0.001, momentum=0.0005)
+    #x_opt.requires_grad_()
+    #for i in range(200):
+       # _x, _y, _z = param2xyz(x_opt)
+        #line1.set_xdata(_x.detach())
+        #line1.set_ydata(_y.detach())
+        #figure.canvas.draw()
+        #figure.canvas.flush_events()
+        
+        
+
+        #loss = torch.log(Lossfunction(x_opt))
+
+        #if i % 10 == 0:
+            #print(f'i {i}: loss_history = {loss.item()}')
+
+       # opt.zero_grad()
+        #loss.backward()
+        #opt.step()
+
+        #loss_history.append(loss.item())
+
+        
+    opt = torch.optim.SGD([x_opt], lr=0.02, momentum=0.0000)
+    x_opt.requires_grad_()
+    for i in range(250):
+        _x, _y, _z = param2xyz(x_opt)
+        line1.set_xdata(_x.detach())
+        line1.set_ydata(_y.detach())
+        figure.canvas.draw()
+        figure.canvas.flush_events()
+        plt.axvline(x = 0.6, color = 'red')
+        plt.axvline(x = -0.6, color = 'red')
+        plt.axhline(y = 1.2, color = 'red')
+        plt.axhline(y = -1.2, color = 'red')
+        
+        
+
+        loss = torch.log(Lossfunction_rect(x_opt))
+
+        if i % 10 == 0:
+            print(f'i {i}: loss_history = {loss.item()}')
+
+        opt.zero_grad()
         loss.backward()
         opt.step()
+
+        loss_history.append(loss.item())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    plt.ioff()
+    
+    psf = point_spread_function(_x.detach(),_y.detach(),_z.detach(), fov)
+    
+    plt.figure(figsize=(10, 8))
+    plt.grid(True)
+    plt.imshow(psf.detach())
+    plt.title("After")
+    plt.savefig('after.png')
+
+    
+    #print(loss_history)
+
+    plt.figure()
+    plt.plot(loss_history, linestyle="-", color='b')
+    plt.title("Loss Function")
+    plt.xlabel("Iterations")
+    plt.ylabel("loss")
+    plt.grid(color='gray', linestyle='-', linewidth=2.0)
+    plt.savefig('LH.png')
+    plt.show()
+
+
+   
+
+
+
+    
+   
+
+
+
+
 

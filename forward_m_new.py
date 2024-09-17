@@ -5,10 +5,9 @@
 #
 import logging
 import torch
-import numpy as np
 import forward_map
-#from forward_map import penalty 
-import penalty
+import numpy as np
+
 
 GPS_FREQ = 1.57542e9
 
@@ -183,7 +182,7 @@ def global_f(x):
     image = point_spread_function(x,y,z,fov)
     
     ## Now score the image using torch functions.
-    position_penalty = penalty.get_penalty(x,y,z, min_spacing, max_radius)
+    position_penalty = forward_map.get_penalty(x,y,z, min_spacing)
 
     # Insert a score for how good the point spread function is There
     image_penalty = 3
@@ -198,7 +197,7 @@ def global_f(p):
     min_spacing = 0.25
     radius = 1.7
     
-    _penalty = penalty.get_penalty(_x,_y,_z, min_spacing, radius)
+    _penalty = forward_map.get_penalty(_x,_y,_z, min_spacing, radius)
     image = point_spread_function(_x,_y,_z,fov)
     return _penalty
 
@@ -256,10 +255,7 @@ if __name__=="__main__":
     
     ## Now score the image using torch functions.
     
-    #position_penalty = penalty.get_penalty(x,y,z, min_spacing, radius)
-    #penalty.get_penalty(x,y,z, min_spacing, radius)
-    #forward_map.get_penalty(x,y,z, min_spacing, radius)
-    
+    position_penalty = forward_map.get_penalty(x,y,z, min_spacing)
     
     plt.imshow(image)
     # plt.show()
